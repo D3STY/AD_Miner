@@ -968,23 +968,20 @@ class Neo4j:
 
     def compute_common_cache(self, requests_results):
         """
-        This function aims to pre compute data that will be reused often in controls.
-        It adds it to the requests_results dictionnary
-        It is mainly populated with legacy code from domains.py, computers.py, etc
+        Pre-compute and cache data that will be reused in multiple controls.
+        This reduces duplicate queries and improves performance.
         """
-        computers_with_last_connection_date = requests_results[
-            "computers_not_connected_since"
-        ]
+
+        # Extract required objects from the request results
+        computers_with_last_connection_date = requests_results["computers_not_connected_since"]
         groups = requests_results["nb_groups"]
         computers_nb_domain_controllers = requests_results["nb_domain_controllers"]
         users_dormant_accounts = requests_results["dormant_accounts"]
         users_nb_domain_admins = requests_results["nb_domain_admins"]
 
+        # Identify inactive computers and users
         computers_not_connected_since_60 = list(
-            filter(
-                lambda computer: int(computer["days"]) > 60,
-                computers_with_last_connection_date,
-            )
+            filter(lambda computer: int(computer["days"]) > 60, computers_with_last_connection_date)
         )
         users_not_connected_for_3_months = (
             [user["name"] for user in users_dormant_accounts if user["days"] > 90]
@@ -992,86 +989,81 @@ class Neo4j:
             else None
         )
 
-        dico_ghost_computer = {}
-        if computers_not_connected_since_60 != []:
-            for dico in computers_not_connected_since_60:
-                dico_ghost_computer[dico["name"]] = True
-
+        # Build quick lookup dictionaries
+        dico_ghost_computer = {dico["name"]: True for dico in computers_not_connected_since_60}
         requests_results["dico_ghost_computer"] = dico_ghost_computer
 
-        dico_ghost_user = {}
-        if users_not_connected_for_3_months != None:
-            for username in users_not_connected_for_3_months:
-                dico_ghost_user[username] = True
-
+        dico_ghost_user = {username: True for username in (users_not_connected_for_3_months or [])}
         requests_results["dico_ghost_user"] = dico_ghost_user
 
         dico_dc_computer = {}
-        if computers_nb_domain_controllers != None:
+        if computers_nb_domain_controllers is not None:
             for dico in computers_nb_domain_controllers:
                 dico_dc_computer[dico["name"]] = True
         requests_results["dico_dc_computer"] = dico_dc_computer
 
         dico_da_group = {}
-        if groups != None:
+        if groups is not None:
             for dico in groups:
                 if dico.get("da"):
                     dico_da_group[dico["name"]] = True
         requests_results["dico_da_group"] = dico_da_group
 
-        dico_user_da = {}
-        if users_nb_domain_admins != []:
-            for dico in users_nb_domain_admins:
-                dico_user_da[dico["name"]] = True
+        dico_user_da = {dico["name"]: True for dico in users_nb_domain_admins}
         requests_results["dico_user_da"] = dico_user_da
 
-        admin_list = []
-        for admin in users_nb_domain_admins:
-            admin_list.append(admin["name"])
+        admin_list = [admin["name"] for admin in users_nb_domain_admins]
         requests_results["admin_list"] = admin_list
 
+        # Objects leading to Domain Admin
         objects_to_domain_admin = requests_results["objects_to_domain_admin"]
-        users_to_domain_admin = {}
-        groups_to_domain_admin = {}
-        computers_to_domain_admin = {}
-        ou_to_domain_admin = {}
-        gpo_to_domain_admin = {}
-        domains_to_domain_admin = {}
+
+        # --- FIX: use defaultdicts and proper list initialization ---
+        from collections import defaultdict
+        users_to_domain_admin = defaultdict(list)
+        groups_to_domain_admin = defaultdict(list)
+        computers_to_domain_admin = defaultdict(list)
+        ou_to_domain_admin = defaultdict(list)
+        gpo_to_domain_admin = defaultdict(list)
+        domains_to_domain_admin = []  # must be a list because we call .append()
+
+        # Normalize domain names to avoid mismatches (NetBIOS vs FQDN)
+        def _domkey(d):
+            k = (d or "").upper()
+            return k.split(".")[0]
 
         domains = requests_results["domains"]
         for domain in domains:
-
-            computers_to_domain_admin[domain[0]] = []
-            users_to_domain_admin[domain[0]] = []
-            groups_to_domain_admin[domain[0]] = []
-            ou_to_domain_admin[domain[0]] = []
-            gpo_to_domain_admin[domain[0]] = []
+            k = _domkey(domain[0])
+            # defaultdict ensures keys exist automatically
 
         logger.print_debug("Split objects into types...")
         for path in objects_to_domain_admin:
+            dk = _domkey(path.nodes[-1].domain)
             if "User" in path.nodes[0].labels:
-                users_to_domain_admin[path.nodes[-1].domain].append(path)
+                users_to_domain_admin[dk].append(path)
             elif "Computer" in path.nodes[0].labels:
-                computers_to_domain_admin[path.nodes[-1].domain].append(path)
+                computers_to_domain_admin[dk].append(path)
             elif "Group" in path.nodes[0].labels:
-                groups_to_domain_admin[path.nodes[-1].domain].append(path)
+                groups_to_domain_admin[dk].append(path)
             elif "OU" in path.nodes[0].labels:
-                ou_to_domain_admin[path.nodes[-1].domain].append(path)
+                ou_to_domain_admin[dk].append(path)
             elif "GPO" in path.nodes[0].labels:
-                gpo_to_domain_admin[path.nodes[-1].domain].append(path)
+                gpo_to_domain_admin[dk].append(path)
             elif "Domain" in path.nodes[0].labels:
                 domains_to_domain_admin.append(path)
         logger.print_debug("[Done]")
 
-        requests_results["users_to_domain_admin"] = users_to_domain_admin
-        requests_results["groups_to_domain_admin"] = groups_to_domain_admin
-        requests_results["computers_to_domain_admin"] = computers_to_domain_admin
-        requests_results["ou_to_domain_admin"] = ou_to_domain_admin
-        requests_results["gpo_to_domain_admin"] = gpo_to_domain_admin
+        requests_results["users_to_domain_admin"] = dict(users_to_domain_admin)
+        requests_results["groups_to_domain_admin"] = dict(groups_to_domain_admin)
+        requests_results["computers_to_domain_admin"] = dict(computers_to_domain_admin)
+        requests_results["ou_to_domain_admin"] = dict(ou_to_domain_admin)
+        requests_results["gpo_to_domain_admin"] = dict(gpo_to_domain_admin)
         requests_results["domains_to_domain_admin"] = domains_to_domain_admin
 
         logger.print_debug("Split paths to DA...")
 
+        # Reverse mapping: object -> paths leading to Domain Admin
         dico_users_to_da = {}
         dico_groups_to_da = {}
         dico_computers_to_da = {}
@@ -1079,31 +1071,16 @@ class Neo4j:
         dico_gpo_to_da = {}
 
         for path in objects_to_domain_admin:
-
             if "User" in path.nodes[0].labels:
-                if path.nodes[0].name not in dico_users_to_da:
-                    dico_users_to_da[path.nodes[0].name] = []
-                dico_users_to_da[path.nodes[0].name].append(path)
-
+                dico_users_to_da.setdefault(path.nodes[0].name, []).append(path)
             elif "Computer" in path.nodes[0].labels:
-                if path.nodes[0].name not in dico_computers_to_da:
-                    dico_computers_to_da[path.nodes[0].name] = []
-                dico_computers_to_da[path.nodes[0].name].append(path)
-
+                dico_computers_to_da.setdefault(path.nodes[0].name, []).append(path)
             elif "Group" in path.nodes[0].labels:
-                if path.nodes[0].name not in dico_groups_to_da:
-                    dico_groups_to_da[path.nodes[0].name] = []
-                dico_groups_to_da[path.nodes[0].name].append(path)
-
+                dico_groups_to_da.setdefault(path.nodes[0].name, []).append(path)
             elif "OU" in path.nodes[0].labels:
-                if path.nodes[0].name not in dico_ou_to_da:
-                    dico_ou_to_da[path.nodes[0].name] = []
-                dico_ou_to_da[path.nodes[0].name].append(path)
-
+                dico_ou_to_da.setdefault(path.nodes[0].name, []).append(path)
             elif "GPO" in path.nodes[0].labels:
-                if path.nodes[0].name not in dico_gpo_to_da:
-                    dico_gpo_to_da[path.nodes[0].name] = []
-                dico_gpo_to_da[path.nodes[0].name].append(path)
+                dico_gpo_to_da.setdefault(path.nodes[0].name, []).append(path)
 
         requests_results["dico_users_to_da"] = dico_users_to_da
         requests_results["dico_computers_to_da"] = dico_computers_to_da
@@ -1113,6 +1090,7 @@ class Neo4j:
 
         logger.print_debug("[Done]")
 
+        # Ensure these values are lists
         if not requests_results["users_admin_on_servers_1"]:
             requests_results["users_admin_on_servers_1"] = []
         if not requests_results["users_admin_on_servers_2"]:
@@ -1122,63 +1100,48 @@ class Neo4j:
             requests_results["users_admin_on_servers_1"]
             + requests_results["users_admin_on_servers_2"]
         )
-        users_admin_on_servers_all_data = [
-            dict(t) for t in {tuple(d.items()) for d in users_admin_on_servers_all_data}
-        ]
-        users_admin_on_servers = generic_computing.getCountValueFromKey(
-            users_admin_on_servers_all_data, "computer"
-        )
+        # Deduplicate dictionaries
+        users_admin_on_servers_all_data = [dict(t) for t in {tuple(d.items()) for d in users_admin_on_servers_all_data}]
+        users_admin_on_servers = generic_computing.getCountValueFromKey(users_admin_on_servers_all_data, "computer")
         users_admin_on_servers_list = generic_computing.getListAdminTo(
-            users_admin_on_servers_all_data,
-            "computer",
-            "user",
+            users_admin_on_servers_all_data, "computer", "user",
         )
 
-        if users_admin_on_servers is not None and users_admin_on_servers != {}:
-            servers_with_most_paths = users_admin_on_servers[
-                list(users_admin_on_servers.keys())[0]
-            ]
-        else:
-            servers_with_most_paths = []
+        servers_with_most_paths = (
+            users_admin_on_servers[list(users_admin_on_servers.keys())[0]]
+            if users_admin_on_servers
+            else []
+        )
 
         requests_results["users_admin_on_servers_list"] = users_admin_on_servers_list
         requests_results["servers_with_most_paths"] = servers_with_most_paths
         requests_results["users_admin_on_servers"] = users_admin_on_servers
-        requests_results["users_admin_on_servers_all_data"] = (
-            users_admin_on_servers_all_data
-        )
+        requests_results["users_admin_on_servers_all_data"] = users_admin_on_servers_all_data
 
-        # Dico for ACL anomaly and futur other controls to retrieve paths to DA on computer ID
+        # Mapping for ACL anomaly checks: computer -> paths to DA
         dico_paths_computers_to_DA = {}
-        for domain in computers_to_domain_admin:
+        for domain in dict(computers_to_domain_admin):
             for path in computers_to_domain_admin[domain]:
-                if path.nodes[0].name not in dico_paths_computers_to_DA:
-                    dico_paths_computers_to_DA[path.nodes[0].name] = []
-                dico_paths_computers_to_DA[path.nodes[0].name].append(path)
+                dico_paths_computers_to_DA.setdefault(path.nodes[0].name, []).append(path)
         requests_results["dico_paths_computers_to_DA"] = dico_paths_computers_to_DA
 
+        # Lookup: is user admin on a computer
         users_admin_on_computers = requests_results["users_admin_on_computers"]
-        dico_is_user_admin_on_computer = {}
-        for d in users_admin_on_computers:
-            dico_is_user_admin_on_computer[d["user"]] = True
-        requests_results["dico_is_user_admin_on_computer"] = (
-            dico_is_user_admin_on_computer
-        )
+        dico_is_user_admin_on_computer = {d["user"]: True for d in users_admin_on_computers}
+        requests_results["dico_is_user_admin_on_computer"] = dico_is_user_admin_on_computer
 
-        # Dico for kerberoastable users to add them to graphs
-        dico_is_kerberoastable = {}
-        for d in requests_results["nb_kerberoastable_accounts"]:
-            dico_is_kerberoastable[d["name"]] = True
-
+        # Lookup: kerberoastable accounts
+        dico_is_kerberoastable = {d["name"]: True for d in requests_results["nb_kerberoastable_accounts"]}
         requests_results["dico_is_kerberoastable"] = dico_is_kerberoastable
 
-        list_computers_admin_computers = requests_results[
-            "computers_admin_on_computers"
-        ]
+        # Count of computers administering other computers
+        list_computers_admin_computers = requests_results["computers_admin_on_computers"]
         computers_admin_to_count = generic_computing.getCountValueFromKey(
             list_computers_admin_computers, "source_computer"
         )
         requests_results["computers_admin_to_count"] = computers_admin_to_count
+
+
 
     @staticmethod
     def check_all_domain_objects_exist(self, result):
