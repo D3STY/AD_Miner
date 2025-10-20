@@ -714,7 +714,7 @@
     },
     "graph_rbcd": {
         "name": "Builds RBCD attack path graph and sets is_rbcd_target attribute ",
-        "request": "MATCH (m:Computer{is_server:true}) WITH m SKIP PARAM1 LIMIT PARAM2 MATCH p=(u:User{path_candidate:true})-[rr:MemberOf|AddMember*0..5]->()-[r:GenericAll|GenericWrite|WriteDACL|AllExtendedRights|Owns]->(m) SET m.is_rbcd_target=TRUE RETURN p",
+        "request": "MATCH (m:Computer{is_server:true}) WITH m SKIP PARAM1 LIMIT PARAM2 MATCH p=(u:User{path_candidate:true})-[rr:MemberOf|AddMember*0..$recursive_level$]->()-[r:GenericAll|GenericWrite|WriteDACL|AllExtendedRights|Owns]->(m) SET m.is_rbcd_target=TRUE RETURN p",
         "output_type": "Graph",
         "is_a_write_request": "true",
         "scope_query": "MATCH (m:Computer{is_server:true}) RETURN count(m)"
